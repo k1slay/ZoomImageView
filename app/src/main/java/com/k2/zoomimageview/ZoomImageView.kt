@@ -18,27 +18,26 @@ import kotlin.math.absoluteValue
  * @since 03/09/20
  */
 
-const val MAX_SCALE = 3F
-const val MIN_SCALE = 1F
-const val MID_SCALE = 1.75F
-
 class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     private var oldScale = MIN_SCALE
     private lateinit var tapDetector: GestureDetector
     private lateinit var scaleDetector: ScaleGestureDetector
     private var touchSlop: Float = 0F
+    private var pagingSlop: Float = 0F
     private val zoomMatrix = Matrix()
     private val baseMatrix = Matrix()
-    private val drawMatrix = Matrix()
-    private val displayRect = RectF()
     private var zoomAnimator: ValueAnimator? = null
     private var handlingTouch = false
     var onDrawableLoaded: () -> Unit = {}
     private val textPaint = Paint()
     private var logText = ""
     private val matrixValues = FloatArray(9)
+    private val zoomInterpolator = AccelerateDecelerateInterpolator()
+    var disallowPagingWhenZoomed = false
     var debugInfoVisible = false
+    private var onClickListener: OnClickListener? = null
+    private var onLongClickListener: OnLongClickListener? = null
 
     constructor(context: Context) : super(context) {
         initView()
@@ -56,6 +55,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     private fun initView() {
         touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+        pagingSlop = ViewConfiguration.get(context).scaledPagingTouchSlop.toFloat()
         initTextPaint()
         scaleType = ScaleType.MATRIX
         scaleDetector = ScaleGestureDetector(context, scaleListener)
@@ -67,11 +67,38 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 return true
             }
 
+            override fun onSingleTapConfirmed(e: MotionEvent?): Boolean {
+                onClickListener?.onClick(this@ZoomImageView)
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent?) {
+                onLongClickListener?.onLongClick(this@ZoomImageView)
+            }
+
             override fun onScroll(
                 e1: MotionEvent, e2: MotionEvent, distanceX: Float, distanceY: Float
             ): Boolean {
                 if (scaleDetector.isInProgress || currentScale <= MIN_SCALE) return false
                 panImage(distanceX, distanceY)
+                var disallowParentIntercept = true
+                if (!disallowPagingWhenZoomed) {
+                    displayRect?.let { rect ->
+                        val absoluteX = distanceX.absoluteValue
+                        if (absoluteX > distanceY.absoluteValue && absoluteX > pagingSlop) {
+                            if (distanceX > 0F && rect.right <= width.toFloat())
+                                disallowParentIntercept = false
+                            else if (distanceX < 0F && rect.left >= 0F)
+                                disallowParentIntercept = false
+                        } else if (distanceY.absoluteValue > pagingSlop) {
+                            if (distanceY > 0F && rect.bottom <= height.toFloat())
+                                disallowParentIntercept = false
+                            else if (distanceY < 0F && rect.top >= 0F)
+                                disallowParentIntercept = false
+                        }
+                    }
+                }
+                parent?.requestDisallowInterceptTouchEvent(disallowParentIntercept)
                 return (distanceX.absoluteValue > touchSlop || distanceY.absoluteValue > touchSlop)
             }
         })
@@ -79,18 +106,18 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent?): Boolean {
-        return tapDetector.onTouchEvent(event)
-                || return scaleDetector.onTouchEvent(event) || return true
+        val disallowIntercept = currentScale > MIN_SCALE || scaleDetector.isInProgress
+        parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
+        return tapDetector.onTouchEvent(event) || return scaleDetector.onTouchEvent(event) || return true
     }
 
     private fun setZoom(scale: Float, x: Float, y: Float) {
         zoomMatrix.postScale(scale, scale, x, y)
         setBounds()
-        updateMatrix()
+        updateMatrix(drawMatrix)
     }
 
-    private fun updateMatrix() {
-        getDrawMatrix()
+    private fun updateMatrix(drawMatrix: Matrix) {
         logText = "tX: $currentTransX tY: $currentTransY"
         logText += " Scale: $currentScale"
         imageMatrix = drawMatrix
@@ -101,8 +128,13 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     }
 
     private fun setScaleAbsolute(scale: Float, x: Float, y: Float) {
+        val zoom = when {
+            scale > MAX_SCALE -> MAX_SCALE
+            scale < MIN_SCALE -> MIN_SCALE
+            else -> scale
+        }
         cancelAnimation()
-        animateZoom(oldScale, scale, x, y)
+        animateZoom(oldScale, zoom, x, y)
     }
 
     private inline val drawableWidth: Int
@@ -113,14 +145,16 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     override fun setImageDrawable(drawable: Drawable?) {
         super.setImageDrawable(drawable)
-        if (drawable != null) {
-            onDrawableLoaded.invoke()
-            resetZoom()
-            zoomMatrix.set(imageMatrix)
+        post {
+            if (drawable != null) {
+                onDrawableLoaded.invoke()
+                resetZoom()
+                zoomMatrix.set(imageMatrix)
+            }
         }
     }
 
-    private fun resetZoom() {
+    fun resetZoom() {
         val mTempSrc = RectF(0F, 0F, drawableWidth.toFloat(), drawableHeight.toFloat())
         val mTempDst = RectF(0F, 0F, width.toFloat(), height.toFloat())
         baseMatrix.setRectToRect(mTempSrc, mTempDst, Matrix.ScaleToFit.CENTER)
@@ -162,7 +196,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         super.onDraw(canvas)
         if (debugInfoVisible) {
             canvas.drawText(logText, 10F, height - 10F, textPaint)
-            val drawableBound = getDisplayRect()?.let {
+            val drawableBound = displayRect?.let {
                 "Drawable: $it"
             } ?: ""
             canvas.drawText(drawableBound, 10F, 40F, textPaint)
@@ -182,7 +216,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 val scale = (it.animatedValue as Float) / currentScale
                 setZoom(scale, x, y)
             }
-            interpolator = AccelerateDecelerateInterpolator()
+            interpolator = zoomInterpolator
             start()
         }
     }
@@ -195,28 +229,11 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private fun panImage(distanceX: Float, distanceY: Float) {
         zoomMatrix.postTranslate(-distanceX, -distanceY)
         setBounds()
-        updateMatrix()
-    }
-
-    private fun getDisplayRect(): RectF? {
-        drawable?.let { d ->
-            displayRect.set(
-                0f, 0f, d.intrinsicWidth.toFloat(), d.intrinsicHeight.toFloat()
-            )
-            getDrawMatrix().mapRect(displayRect)
-            return displayRect
-        }
-        return null
-    }
-
-    private fun getDrawMatrix(): Matrix {
-        drawMatrix.set(baseMatrix)
-        drawMatrix.postConcat(zoomMatrix)
-        return drawMatrix;
+        updateMatrix(drawMatrix)
     }
 
     private fun setBounds() {
-        val rect = getDisplayRect() ?: return
+        val rect = displayRect ?: return
         val height = rect.height()
         val width = rect.width()
         val viewHeight: Int = this.height
@@ -265,5 +282,44 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
             zoomMatrix.getValues(matrixValues)
             return matrixValues[Matrix.MTRANS_Y]
         }
+
+    private val displayRect: RectF? = RectF()
+        get() {
+            drawable?.let { d ->
+                field?.set(
+                    0f, 0f, d.intrinsicWidth.toFloat(), d.intrinsicHeight.toFloat()
+                )
+                drawMatrix.mapRect(field)
+                return field
+            }
+            return null
+        }
+
+    private val drawMatrix: Matrix = Matrix()
+        get() {
+            field.set(baseMatrix)
+            field.postConcat(zoomMatrix)
+            return field
+        }
+
+    var currentZoom: Float
+        get() = currentScale
+        set(value) {
+            setScaleAbsolute(value, width / 2F, height / 2F)
+        }
+
+    companion object {
+        const val MAX_SCALE = 3F
+        const val MIN_SCALE = 1F
+        const val MID_SCALE = 1.75F
+    }
+
+    override fun setOnClickListener(l: OnClickListener?) {
+        this.onClickListener = l
+    }
+
+    override fun setOnLongClickListener(l: OnLongClickListener?) {
+        this.onLongClickListener = l
+    }
 
 }
