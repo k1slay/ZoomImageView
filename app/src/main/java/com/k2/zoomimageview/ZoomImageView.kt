@@ -86,12 +86,12 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                     displayRect?.let { rect ->
                         val absoluteX = distanceX.absoluteValue
                         if (absoluteX > distanceY.absoluteValue && absoluteX > pagingSlop) {
-                            if (distanceX > 0F && rect.right <= width.toFloat())
+                            if (distanceX > 0F && rect.right <= viewWidth.toFloat())
                                 disallowParentIntercept = false
                             else if (distanceX < 0F && rect.left >= 0F)
                                 disallowParentIntercept = false
                         } else if (distanceY.absoluteValue > pagingSlop) {
-                            if (distanceY > 0F && rect.bottom <= height.toFloat())
+                            if (distanceY > 0F && rect.bottom <= viewHeight.toFloat())
                                 disallowParentIntercept = false
                             else if (distanceY < 0F && rect.top >= 0F)
                                 disallowParentIntercept = false
@@ -145,20 +145,31 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     override fun setImageDrawable(drawable: Drawable?) {
         super.setImageDrawable(drawable)
+        if (drawable != null) {
+            onDrawableLoaded.invoke()
+            resetZoom()
+            zoomMatrix.set(imageMatrix)
+        }
+    }
+
+
+    override fun setImageResource(resId: Int) {
         post {
-            if (drawable != null) {
-                onDrawableLoaded.invoke()
-                resetZoom()
-                zoomMatrix.set(imageMatrix)
-            }
+            super.setImageResource(resId)
+        }
+    }
+
+    override fun setImageBitmap(bm: Bitmap?) {
+        post {
+            super.setImageBitmap(bm)
         }
     }
 
     fun resetZoom() {
         val mTempSrc = RectF(0F, 0F, drawableWidth.toFloat(), drawableHeight.toFloat())
-        val mTempDst = RectF(0F, 0F, width.toFloat(), height.toFloat())
+        val mTempDst = RectF(0F, 0F, viewWidth.toFloat(), viewHeight.toFloat())
         baseMatrix.setRectToRect(mTempSrc, mTempDst, Matrix.ScaleToFit.CENTER)
-        setScaleAbsolute(MIN_SCALE, width / 2F, height / 2F)
+        setScaleAbsolute(MIN_SCALE, viewWidth / 2F, viewHeight / 2F)
         imageMatrix = baseMatrix
     }
 
@@ -236,7 +247,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         val rect = displayRect ?: return
         val height = rect.height()
         val width = rect.width()
-        val viewHeight: Int = this.height
+        val viewHeight: Int = this.viewHeight
         var deltaX = 0f
         var deltaY = 0f
         when {
@@ -250,7 +261,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 deltaY = viewHeight - rect.bottom
             }
         }
-        val viewWidth: Int = this.width
+        val viewWidth: Int = this.viewWidth
         when {
             width <= viewWidth -> {
                 deltaX = (viewWidth - width) / 2 - rect.left
@@ -305,7 +316,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     var currentZoom: Float
         get() = currentScale
         set(value) {
-            setScaleAbsolute(value, width / 2F, height / 2F)
+            setScaleAbsolute(value, viewWidth / 2F, viewHeight / 2F)
         }
 
     companion object {
@@ -321,5 +332,15 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     override fun setOnLongClickListener(l: OnLongClickListener?) {
         this.onLongClickListener = l
     }
+
+    private inline val viewWidth: Int
+        get() {
+            return width - paddingLeft - paddingRight
+        }
+
+    private inline val viewHeight: Int
+        get() {
+            return height - paddingTop - paddingBottom
+        }
 
 }
