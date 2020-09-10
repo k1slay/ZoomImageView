@@ -20,24 +20,24 @@ import kotlin.math.absoluteValue
 
 class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
-    private var oldScale = MIN_SCALE
-    private lateinit var tapDetector: GestureDetector
-    private lateinit var scaleDetector: ScaleGestureDetector
-    private var touchSlop: Float = 0F
-    private var pagingSlop: Float = 0F
+    private val textPaint = Paint()
     private val zoomMatrix = Matrix()
     private val baseMatrix = Matrix()
-    private var zoomAnimator: ValueAnimator? = null
-    private var handlingTouch = false
-    var onDrawableLoaded: () -> Unit = {}
-    private val textPaint = Paint()
-    private var logText = ""
+    private val preEventImgRect = RectF()
     private val matrixValues = FloatArray(9)
     private val zoomInterpolator = AccelerateDecelerateInterpolator()
-    var disallowPagingWhenZoomed = false
-    var debugInfoVisible = false
+    private var oldScale = MIN_SCALE
+    private var touchSlop: Float = 0F
+    private var zoomAnimator: ValueAnimator? = null
+    private var handlingTouch = false
+    private var logText = ""
     private var onClickListener: OnClickListener? = null
     private var onLongClickListener: OnLongClickListener? = null
+    private lateinit var tapDetector: GestureDetector
+    private lateinit var scaleDetector: ScaleGestureDetector
+    var disallowPagingWhenZoomed = false
+    var debugInfoVisible = false
+    var onDrawableLoaded: () -> Unit = {}
 
     constructor(context: Context) : super(context) {
         initView()
@@ -55,7 +55,6 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     private fun initView() {
         touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-        pagingSlop = ViewConfiguration.get(context).scaledPagingTouchSlop.toFloat()
         initTextPaint()
         scaleType = ScaleType.MATRIX
         scaleDetector = ScaleGestureDetector(context, scaleListener)
@@ -83,19 +82,16 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 panImage(distanceX, distanceY)
                 var disallowParentIntercept = true
                 if (!disallowPagingWhenZoomed) {
-                    displayRect?.let { rect ->
-                        val absoluteX = distanceX.absoluteValue
-                        if (absoluteX > distanceY.absoluteValue && absoluteX > pagingSlop) {
-                            if (distanceX > 0F && rect.right <= viewWidth.toFloat())
-                                disallowParentIntercept = false
-                            else if (distanceX < 0F && rect.left >= 0F)
-                                disallowParentIntercept = false
-                        } else if (distanceY.absoluteValue > pagingSlop) {
-                            if (distanceY > 0F && rect.bottom <= viewHeight.toFloat())
-                                disallowParentIntercept = false
-                            else if (distanceY < 0F && rect.top >= 0F)
-                                disallowParentIntercept = false
-                        }
+                    if (distanceX.absoluteValue > distanceY.absoluteValue) {
+                        if (distanceX > 0F && preEventImgRect.right == viewWidth.toFloat())
+                            disallowParentIntercept = false
+                        else if (distanceX < 0F && preEventImgRect.left == 0F)
+                            disallowParentIntercept = false
+                    } else {
+                        if (distanceY > 0F && preEventImgRect.bottom == viewHeight.toFloat())
+                            disallowParentIntercept = false
+                        else if (distanceY < 0F && preEventImgRect.top == 0F)
+                            disallowParentIntercept = false
                     }
                 }
                 parent?.requestDisallowInterceptTouchEvent(disallowParentIntercept)
@@ -107,6 +103,11 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         val disallowIntercept = currentScale > MIN_SCALE || scaleDetector.isInProgress
+        if (event?.action == MotionEvent.ACTION_DOWN) {
+            displayRect?.let {
+                preEventImgRect.set(it)
+            }
+        }
         parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
         return tapDetector.onTouchEvent(event) || return scaleDetector.onTouchEvent(event) || return true
     }
