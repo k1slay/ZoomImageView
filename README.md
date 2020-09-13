@@ -6,6 +6,7 @@ Supports
 - Double-tap to zoom
 - Pinch zoom
 - Drag to pan
+- FLing to pan
 
 ![Double tap](media/double_tap.gif)
 &nbsp;&nbsp;
@@ -15,7 +16,7 @@ Supports
 
 ## Implementation
 
-#### Uses the standard `AppCompatImageView` api with a few minor additions
+#### Extends the standard `AppCompatImageView` api with a few minor additions
 
 Add to layout
 ```xml
@@ -52,7 +53,6 @@ imageView.debugInfoVisible = true
 ```
 ## Planned improvements and future additions
 
-- Fling support
 - Swipe to dismiss
 - Support for multiple scale types (only fit-center works for now)
 - Publish as a library (maybe)
