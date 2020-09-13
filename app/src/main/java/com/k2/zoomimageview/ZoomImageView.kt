@@ -11,6 +11,9 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.ViewConfiguration
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.widget.OverScroller
+import androidx.core.view.ViewCompat
 import kotlin.math.absoluteValue
 
 /**
@@ -26,17 +29,20 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private val preEventImgRect = RectF()
     private val matrixValues = FloatArray(9)
     private val zoomInterpolator = AccelerateDecelerateInterpolator()
-    private var oldScale = MIN_SCALE
-    private var touchSlop: Float = 0F
-    private var zoomAnimator: ValueAnimator? = null
-    private var handlingTouch = false
     private var logText = ""
+    private var handlingTouch = false
+    private var touchSlop: Float = 0F
+    private var oldScale = MIN_SCALE
+    private var zoomAnimator: ValueAnimator? = null
     private var onClickListener: OnClickListener? = null
     private var onLongClickListener: OnLongClickListener? = null
+    private var viewWidth = right - left - paddingLeft - paddingRight
+    private var viewHeight = bottom - top - paddingTop - paddingBottom
+    private lateinit var scroller: OverScroller
     private lateinit var tapDetector: GestureDetector
     private lateinit var scaleDetector: ScaleGestureDetector
-    var disallowPagingWhenZoomed = false
     var debugInfoVisible = false
+    var disallowPagingWhenZoomed = false
     var onDrawableLoaded: () -> Unit = {}
 
     constructor(context: Context) : super(context) {
@@ -58,6 +64,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         initTextPaint()
         scaleType = ScaleType.MATRIX
         scaleDetector = ScaleGestureDetector(context, scaleListener)
+        scroller = OverScroller(context, DecelerateInterpolator())
         tapDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 oldScale = currentScale
@@ -97,13 +104,45 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 parent?.requestDisallowInterceptTouchEvent(disallowParentIntercept)
                 return (distanceX.absoluteValue > touchSlop || distanceY.absoluteValue > touchSlop)
             }
+
+            override fun onFling(
+                e1: MotionEvent, e2: MotionEvent, velocityX: Float, velocityY: Float
+            ): Boolean {
+                val maxX = (preEventImgRect.width() - viewWidth).toInt()
+                val maxY = (preEventImgRect.height() - viewHeight).toInt()
+                flingRunnable.lastX = -preEventImgRect.left
+                flingRunnable.lastY = -preEventImgRect.top
+                scroller.fling(
+                    flingRunnable.lastX.toInt(), flingRunnable.lastY.toInt(), -velocityX.toInt(),
+                    -velocityY.toInt(), 0, maxX, 0, maxY
+                )
+                ViewCompat.postOnAnimation(this@ZoomImageView, flingRunnable)
+                return true
+            }
         })
+    }
+
+    private val flingRunnable = object : Runnable {
+        var lastX = 0F
+        var lastY = 0F
+        override fun run() {
+            if (!scroller.isFinished && scroller.computeScrollOffset()) {
+                val curX = scroller.currX.toFloat()
+                val curY = scroller.currY.toFloat()
+                panImage((curX - lastX), (curY - lastY))
+                lastX = curX
+                lastY = curY
+                ViewCompat.postOnAnimation(this@ZoomImageView, this)
+            }
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         val disallowIntercept = currentScale > MIN_SCALE || scaleDetector.isInProgress
         if (event?.action == MotionEvent.ACTION_DOWN) {
+            removeCallbacks(flingRunnable)
+            scroller.forceFinished(true)
             displayRect?.let {
                 preEventImgRect.set(it)
             }
@@ -153,17 +192,11 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         }
     }
 
-
-    override fun setImageResource(resId: Int) {
-        post {
-            super.setImageResource(resId)
-        }
-    }
-
-    override fun setImageBitmap(bm: Bitmap?) {
-        post {
-            super.setImageBitmap(bm)
-        }
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        viewWidth = right - left - paddingLeft - paddingRight
+        viewHeight = bottom - top - paddingTop - paddingBottom
+        if (changed) resetZoom()
     }
 
     fun resetZoom() {
@@ -333,15 +366,5 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     override fun setOnLongClickListener(l: OnLongClickListener?) {
         this.onLongClickListener = l
     }
-
-    private inline val viewWidth: Int
-        get() {
-            return width - paddingLeft - paddingRight
-        }
-
-    private inline val viewHeight: Int
-        get() {
-            return height - paddingTop - paddingBottom
-        }
 
 }
