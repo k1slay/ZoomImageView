@@ -30,7 +30,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private val matrixValues = FloatArray(9)
     private val zoomInterpolator = AccelerateDecelerateInterpolator()
     private var logText = ""
-    private var handlingTouch = false
+    private var handlingDismiss = false
     private var touchSlop: Float = 0F
     private var oldScale = MIN_SCALE
     private var zoomAnimator: ValueAnimator? = null
@@ -43,7 +43,9 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private lateinit var scaleDetector: ScaleGestureDetector
     var debugInfoVisible = false
     var disallowPagingWhenZoomed = false
+    var swipeToDismissEnabled = false
     var onDrawableLoaded: () -> Unit = {}
+    var onDismiss: () -> Unit = {}
 
     constructor(context: Context) : super(context) {
         initView()
@@ -85,16 +87,29 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
             override fun onScroll(
                 e1: MotionEvent, e2: MotionEvent, distanceX: Float, distanceY: Float
             ): Boolean {
-                if (scaleDetector.isInProgress || currentScale <= MIN_SCALE) return false
-                panImage(distanceX, distanceY)
+                if (scaleDetector.isInProgress) return false
+                val xAbs = distanceX.absoluteValue
+                val yAbs = distanceY.absoluteValue
+                if (currentScale <= MIN_SCALE) {
+                    if (swipeToDismissEnabled && yAbs > xAbs && yAbs > touchSlop) {
+                        handlingDismiss = true
+                        panImage(0F, distanceY)
+                    }
+                } else {
+                    panImage(distanceX, distanceY)
+                }
                 var disallowParentIntercept = true
                 if (!disallowPagingWhenZoomed) {
-                    if (distanceX.absoluteValue > distanceY.absoluteValue) {
+                    if (handlingDismiss) {
+                        disallowParentIntercept = true
+                    } else if (xAbs > yAbs) {
+                        // horizontal scroll
                         if (distanceX > 0F && preEventImgRect.right == viewWidth.toFloat())
                             disallowParentIntercept = false
                         else if (distanceX < 0F && preEventImgRect.left == 0F)
                             disallowParentIntercept = false
                     } else {
+                        // vertical scroll
                         if (distanceY > 0F && preEventImgRect.bottom == viewHeight.toFloat())
                             disallowParentIntercept = false
                         else if (distanceY < 0F && preEventImgRect.top == 0F)
@@ -102,12 +117,13 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                     }
                 }
                 parent?.requestDisallowInterceptTouchEvent(disallowParentIntercept)
-                return (distanceX.absoluteValue > touchSlop || distanceY.absoluteValue > touchSlop)
+                return (xAbs > touchSlop || yAbs > touchSlop)
             }
 
             override fun onFling(
                 e1: MotionEvent, e2: MotionEvent, velocityX: Float, velocityY: Float
             ): Boolean {
+                if (currentZoom <= MIN_SCALE) return false
                 val maxX = (preEventImgRect.width() - viewWidth).toInt()
                 val maxY = (preEventImgRect.height() - viewHeight).toInt()
                 flingRunnable.lastX = -preEventImgRect.left
@@ -117,6 +133,16 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                     -velocityY.toInt(), 0, maxX, 0, maxY
                 )
                 ViewCompat.postOnAnimation(this@ZoomImageView, flingRunnable)
+                return true
+            }
+
+            override fun onDown(e: MotionEvent?): Boolean {
+                handlingDismiss = false
+                removeCallbacks(flingRunnable)
+                scroller.forceFinished(true)
+                displayRect?.let {
+                    preEventImgRect.set(it)
+                }
                 return true
             }
         })
@@ -139,12 +165,17 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent?): Boolean {
-        val disallowIntercept = currentScale > MIN_SCALE || scaleDetector.isInProgress
-        if (event?.action == MotionEvent.ACTION_DOWN) {
-            removeCallbacks(flingRunnable)
-            scroller.forceFinished(true)
-            displayRect?.let {
-                preEventImgRect.set(it)
+        val disallowIntercept =
+            currentScale > MIN_SCALE || scaleDetector.isInProgress || handlingDismiss
+        if (event?.action == MotionEvent.ACTION_UP) {
+            if (handlingDismiss) {
+                if (currentTransY.absoluteValue > viewHeight / 3) {
+                    onDismiss.invoke()
+                } else {
+                    handlingDismiss = false
+                    zoomMatrix.setTranslate(0F, 0F)
+                    panImage(0F, 0F)
+                }
             }
         }
         parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
@@ -208,10 +239,6 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     }
 
     private val scaleListener = object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScaleBegin(detector: ScaleGestureDetector?): Boolean {
-            handlingTouch = true
-            return super.onScaleBegin(detector)
-        }
 
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             if (detector.scaleFactor.isNaN() || detector.scaleFactor.isInfinite())
@@ -233,7 +260,6 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 needsReset = true
             }
             if (needsReset) setScaleAbsolute(newScale, detector.focusX, detector.focusY)
-            handlingTouch = false
         }
     }
 
@@ -286,7 +312,8 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         var deltaY = 0f
         when {
             height <= viewHeight -> {
-                deltaY = (viewHeight - height) / 2 - rect.top
+                if (!handlingDismiss)
+                    deltaY = (viewHeight - height) / 2 - rect.top
             }
             rect.top > 0 -> {
                 deltaY = -rect.top
@@ -350,6 +377,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     var currentZoom: Float
         get() = currentScale
         set(value) {
+            oldScale = currentScale
             setScaleAbsolute(value, viewWidth / 2F, viewHeight / 2F)
         }
 
