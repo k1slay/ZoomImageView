@@ -18,5 +18,9 @@ class MainActivity : AppCompatActivity() {
             findViewById<View>(R.id.progress).visibility = View.GONE
         }
         imageView.load("https://images.unsplash.com/photo-1534142499731-a32a99935397?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=2734&q=80")
+        imageView.swipeToDismissEnabled = true
+        imageView.onDismiss = {
+            finish()
+        }
     }
 }

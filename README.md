@@ -68,6 +68,12 @@ imageView.onDismiss = {
     finishAfterTransition() or finish()
 }
 ```
+Track swipe to dismiss progress. Can be used to update UI accordingly
+```kotlin
+dismissProgressListener = { progress ->
+    bgView.alpha = 1.0f - progress
+}
+```
 ## Planned improvements and future additions
 
 - Support for multiple scale types (only fit-center works for now)

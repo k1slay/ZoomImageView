@@ -13,6 +13,8 @@ import android.view.ViewConfiguration
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.OverScroller
+import androidx.core.animation.doOnCancel
+import androidx.core.animation.doOnEnd
 import androidx.core.view.ViewCompat
 import kotlin.math.absoluteValue
 
@@ -33,6 +35,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private var handlingDismiss = false
     private var touchSlop: Float = 0F
     private var oldScale = MIN_SCALE
+    private var panAnimator: ValueAnimator? = null
     private var zoomAnimator: ValueAnimator? = null
     private var onClickListener: OnClickListener? = null
     private var onLongClickListener: OnLongClickListener? = null
@@ -42,10 +45,11 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     private lateinit var tapDetector: GestureDetector
     private lateinit var scaleDetector: ScaleGestureDetector
     var debugInfoVisible = false
-    var disallowPagingWhenZoomed = false
     var swipeToDismissEnabled = false
-    var onDrawableLoaded: () -> Unit = {}
+    var disallowPagingWhenZoomed = false
     var onDismiss: () -> Unit = {}
+    var onDrawableLoaded: () -> Unit = {}
+    var dismissProgressListener: (progress: Float) -> Unit = {}
 
     constructor(context: Context) : super(context) {
         initView()
@@ -91,9 +95,10 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
                 val xAbs = distanceX.absoluteValue
                 val yAbs = distanceY.absoluteValue
                 if (currentScale <= MIN_SCALE) {
-                    if (swipeToDismissEnabled && yAbs > xAbs && yAbs > touchSlop) {
+                    if (swipeToDismissEnabled && yAbs > xAbs) {
                         handlingDismiss = true
                         panImage(0F, distanceY)
+                        dismissProgressListener.invoke(dismissProgress)
                     }
                 } else {
                     panImage(distanceX, distanceY)
@@ -137,12 +142,13 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
             }
 
             override fun onDown(e: MotionEvent?): Boolean {
-                handlingDismiss = false
                 removeCallbacks(flingRunnable)
                 scroller.forceFinished(true)
                 displayRect?.let {
                     preEventImgRect.set(it)
                 }
+                panAnimator?.removeAllUpdateListeners()
+                panAnimator?.cancel()
                 return true
             }
         })
@@ -169,12 +175,10 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
             currentScale > MIN_SCALE || scaleDetector.isInProgress || handlingDismiss
         if (event?.action == MotionEvent.ACTION_UP) {
             if (handlingDismiss) {
-                if (currentTransY.absoluteValue > viewHeight / 3) {
+                if (currentTransY.absoluteValue > dismissThreshold) {
                     onDismiss.invoke()
                 } else {
-                    handlingDismiss = false
-                    zoomMatrix.setTranslate(0F, 0F)
-                    panImage(0F, 0F)
+                    animatePan(0F, currentTransY, 0F, 0F, dismissProgress)
                 }
             }
         }
@@ -231,9 +235,9 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
     }
 
     fun resetZoom() {
-        val mTempSrc = RectF(0F, 0F, drawableWidth.toFloat(), drawableHeight.toFloat())
-        val mTempDst = RectF(0F, 0F, viewWidth.toFloat(), viewHeight.toFloat())
-        baseMatrix.setRectToRect(mTempSrc, mTempDst, Matrix.ScaleToFit.CENTER)
+        val tempSrc = RectF(0F, 0F, drawableWidth.toFloat(), drawableHeight.toFloat())
+        val tempDst = RectF(0F, 0F, viewWidth.toFloat(), viewHeight.toFloat())
+        baseMatrix.setRectToRect(tempSrc, tempDst, Matrix.ScaleToFit.CENTER)
         setScaleAbsolute(MIN_SCALE, viewWidth / 2F, viewHeight / 2F)
         imageMatrix = baseMatrix
     }
@@ -282,7 +286,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
 
     private fun animateZoom(startZoom: Float, endZoom: Float, x: Float, y: Float) {
         zoomAnimator = ValueAnimator.ofFloat(startZoom, endZoom).apply {
-            duration = 300
+            duration = VALUE_ANIMATOR_DURATION
             addUpdateListener {
                 val scale = (it.animatedValue as Float) / currentScale
                 setZoom(scale, x, y)
@@ -292,13 +296,43 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         }
     }
 
+    private fun animatePan(
+        startX: Float, startY: Float, endX: Float, endY: Float, dismissProgress: Float? = null
+    ) {
+        panAnimator = ValueAnimator.ofFloat(startX, startY, endX, endY).apply {
+            duration = VALUE_ANIMATOR_DURATION
+            addUpdateListener {
+                val newX = (startX - endX) * it.animatedFraction
+                val newY = (startY - endY) * it.animatedFraction
+                panImage(startX - newX, startY - newY, setAbsolute = true)
+                dismissProgress?.let { progress ->
+                    if (1.0F - it.animatedFraction < progress) {
+                        dismissProgressListener.invoke(1.0F - it.animatedFraction)
+                    }
+                }
+            }
+            interpolator = zoomInterpolator
+            start()
+            doOnCancel {
+                panImage(0F, 0F, setAbsolute = true)
+                handlingDismiss = false
+            }
+            doOnEnd {
+                handlingDismiss = false
+            }
+        }
+    }
+
     private fun cancelAnimation() {
         zoomAnimator?.removeAllUpdateListeners()
         zoomAnimator?.cancel()
     }
 
-    private fun panImage(distanceX: Float, distanceY: Float) {
-        zoomMatrix.postTranslate(-distanceX, -distanceY)
+    private fun panImage(x: Float, y: Float, setAbsolute: Boolean = false) {
+        if (setAbsolute)
+            zoomMatrix.setTranslate(x, y)
+        else
+            zoomMatrix.postTranslate(-x, -y)
         setBounds()
         updateMatrix(drawMatrix)
     }
@@ -337,6 +371,9 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         zoomMatrix.postTranslate(deltaX, deltaY)
     }
 
+    private inline val dismissThreshold: Float
+        get() = viewHeight / 3F
+
     private inline val currentScale: Float
         get() {
             zoomMatrix.getValues(matrixValues)
@@ -354,6 +391,9 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
             zoomMatrix.getValues(matrixValues)
             return matrixValues[Matrix.MTRANS_Y]
         }
+
+    private inline val dismissProgress: Float
+        get() = currentTransY.absoluteValue / dismissThreshold
 
     private val displayRect: RectF? = RectF()
         get() {
@@ -385,6 +425,7 @@ class ZoomImageView : androidx.appcompat.widget.AppCompatImageView {
         const val MAX_SCALE = 3F
         const val MIN_SCALE = 1F
         const val MID_SCALE = 1.75F
+        private const val VALUE_ANIMATOR_DURATION = 300L
     }
 
     override fun setOnClickListener(l: OnClickListener?) {
